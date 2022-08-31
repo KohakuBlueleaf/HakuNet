@@ -1,11 +1,12 @@
-from typing import Any
+from typing import *
 
 import asyncio
+
+from time import time_ns
 from asyncio import open_connection, sleep
 from asyncio import Event, StreamWriter, StreamReader
-from time import time_ns
 
-from hakunet.utils import *
+from hakunet.protocol import *
 
 
 #Export
@@ -20,8 +21,13 @@ Transaction = Callable[["HakuClient.TRXContext", Any], Awaitable[Any]]
 
 class HakuClient:
     class Context:
-        def __init__(self, writer: StreamWriter):
+        def __init__(
+            self, 
+            writer: StreamWriter,
+            protocol: BaseProtocol,
+        ):
             self.writer = writer
+            self.protocol = protocol
         
         async def close(self):
             self.writer.close()
@@ -31,8 +37,9 @@ class HakuClient:
             return self.writer.is_closing()
         
         async def send(self, data):
-            write_with_len(self.writer, data)
-            await self.writer.drain()
+            await self.protocol.write_obj(
+                self.writer, data
+            )
         
         def emit(self, event: str, *args, **kwargs):
             self.send([event, args, kwargs])
@@ -51,12 +58,17 @@ class HakuClient:
             self.writer = writer
             self.m_index = 0
         
-        def start(self):
-            write_with_len(self.writer, ['tsc_st', self.tid, self.ttype])
+        async def start(self):
+            await self.client.protocol.write_obj(
+                self.writer,
+                ['tsc_st', self.tid, self.ttype],
+            )
         
         async def send(self, data):
-            write_with_len(self.writer, ['tsc', self.tid, data])
-            await self.writer.drain()
+            await self.client.protocol.write_obj(
+                self.writer,
+                ['tsc', self.tid, data],
+            )
         
         async def read(self):
             await self.client._trx_event[self.tid].wait()
@@ -65,10 +77,16 @@ class HakuClient:
                 self.client._trx_event[self.tid].clear()
             return data
     
-    def __init__(self, host: str, port: str|int):
+    def __init__(
+        self, 
+        host: str, 
+        port: str|int,
+        protocol: BaseProtocol = PickleProtocol(),
+    ):
         self.host = host
         self.port = port
         self.context: HakuClient.Context
+        self.protocol = protocol
         
         self.handlers: dict[str, EventHandler] = {}
         self.transactions: dict[str, Transaction] = {}
@@ -116,7 +134,7 @@ class HakuClient:
                 )
                 self._trx_event[tsc.tid] = Event()
                 self._trx_mes_queue[tsc.tid] = []
-                tsc.start()
+                await tsc.start()
                 res = await func(tsc, *args, **kwargs)
                 del self._trx_event[tsc.tid]
                 del self._trx_mes_queue[tsc.tid]
@@ -135,7 +153,7 @@ class HakuClient:
             )
             self._trx_event[tsc.tid] = Event()
             self._trx_mes_queue[tsc.tid] = []
-            tsc.start()
+            await tsc.start()
             res = await func(tsc, *args, **kwargs)
             del self._trx_event[tsc.tid]
             del self._trx_mes_queue[tsc.tid]
@@ -165,12 +183,14 @@ class HakuClient:
         reader: StreamReader, 
         writer: StreamWriter,
     ):
-        self.context = HakuClient.Context(writer)
+        self.context = HakuClient.Context(
+            writer, self.protocol
+        )
         asyncio.ensure_future(self.event_loop(reader))
     
     async def event_loop(self, reader):
         while not self.context.is_closing():
-            data = await read_msg(reader)
+            data = await self.protocol.read_obj(reader)
             if data is None:
                 break
             

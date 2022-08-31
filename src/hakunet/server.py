@@ -1,7 +1,10 @@
+from typing import *
+
 import asyncio
 from asyncio import new_event_loop, start_server, Event
 from asyncio import StreamReader, StreamWriter
-from hakunet.utils import *
+
+from hakunet.protocol import BaseProtocol, PickleProtocol
 
 
 #Export
@@ -33,7 +36,9 @@ class HakuServer:
             return self.writer.is_closing()
         
         async def send(self, data):
-            await write_with_len_async(self.writer, data)
+            await self.server.protocol.write_obj(
+                self.writer, data
+            )
         
         async def emit(
             self, 
@@ -66,7 +71,12 @@ class HakuServer:
                 self.server._t_event[self.tid].clear()
             return data
     
-    def __init__(self, host: str, port: int|str):
+    def __init__(
+        self, 
+        host: str, 
+        port: int|str,
+        protocol: BaseProtocol = PickleProtocol(),
+    ):
         self.host = host
         self.port = port
         
@@ -74,6 +84,8 @@ class HakuServer:
         self.server_starter = start_server(
             self.handle_client, host, port
         )
+        
+        self.protocol = protocol
         
         self.contexts: list[HakuServer.Context] = []
         self.event_handlers: dict[str, EventHandler] = {}
@@ -104,7 +116,7 @@ class HakuServer:
         self.contexts.append(new_ctx)
         
         while not new_ctx.is_closing():
-            data = await read_msg(reader)
+            data = await self.protocol.read_obj(new_ctx.reader)
             if data is None:
                 break
             
