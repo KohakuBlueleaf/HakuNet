@@ -38,7 +38,7 @@ async def main():
             await client.call('ping')
         )
 
-asyncio.run(main)
+asyncio.run(main())
 ```
 
 For more example, see `hakunet/example` folder.
